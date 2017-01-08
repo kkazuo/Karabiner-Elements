@@ -362,7 +362,29 @@ private:
     return false;
   }
 
-  void post_key(krbn::key_code key_code, bool pressed) {
+	void post_key(krbn::key_code key_code, bool pressed) {
+		if (modifier_flag_manager_.pressed(krbn::modifier_flag::left_control)) {
+			switch (static_cast<uint32_t>(key_code)) {
+#define wrapC(fk,tk) \
+			fk: \
+				if (pressed) post_key1(static_cast<krbn::key_code>(224), false); \
+				post_key1(static_cast<krbn::key_code>(tk), pressed);             \
+				if (!pressed) post_key1(static_cast<krbn::key_code>(224), true); \
+				return
+			case wrapC(16, 40);
+			case wrapC(13, 42);
+			case wrapC(10, 43);
+			case wrapC( 9, 79);
+			case wrapC( 7, 80);
+			case wrapC(21, 82);
+			case wrapC(25, 81);
+			}
+		}
+		//logger::get_logger().error("kc {0}", static_cast<uint32_t>(key_code));
+		post_key1(key_code, pressed);
+	}
+
+  void post_key1(krbn::key_code key_code, bool pressed) {
     if (auto usage_page = krbn::types::get_usage_page(key_code)) {
       if (auto usage = krbn::types::get_usage(key_code)) {
         pqrs::karabiner_virtual_hid_device::hid_event_service::keyboard_event keyboard_event;
