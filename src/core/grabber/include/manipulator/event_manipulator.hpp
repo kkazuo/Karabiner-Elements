@@ -21,7 +21,8 @@ class event_manipulator final {
 public:
   event_manipulator(const event_manipulator&) = delete;
 
-  event_manipulator(virtual_hid_device_client& virtual_hid_device_client) : virtual_hid_device_client_(virtual_hid_device_client) {
+  event_manipulator(virtual_hid_device_client& virtual_hid_device_client) : virtual_hid_device_client_(virtual_hid_device_client),
+                                                                            last_timestamp_(0) {
   }
 
   ~event_manipulator(void) {
@@ -109,6 +110,7 @@ public:
   }
 
   void handle_keyboard_event(device_registry_entry_id device_registry_entry_id,
+                             uint64_t timestamp,
                              krbn::key_code from_key_code,
                              bool pressed) {
     krbn::key_code to_key_code = from_key_code;
@@ -191,14 +193,15 @@ public:
     }
 
     // ----------------------------------------
-    if (post_modifier_flag_event(to_key_code, pressed)) {
+    if (post_modifier_flag_event(to_key_code, pressed, timestamp)) {
       return;
     }
 
-    post_key(to_key_code, pressed);
+    post_key(to_key_code, pressed, timestamp);
   }
 
   void handle_pointing_event(device_registry_entry_id device_registry_entry_id,
+                             uint64_t timestamp,
                              krbn::pointing_event pointing_event,
                              boost::optional<krbn::pointing_button> pointing_button,
                              CFIndex integer_value) {
@@ -348,28 +351,28 @@ private:
     std::mutex mutex_;
   };
 
-  bool post_modifier_flag_event(krbn::key_code key_code, bool pressed) {
+  bool post_modifier_flag_event(krbn::key_code key_code, bool pressed, uint64_t timestamp) {
     auto operation = pressed ? manipulator::modifier_flag_manager::operation::increase : manipulator::modifier_flag_manager::operation::decrease;
 
     auto modifier_flag = krbn::types::get_modifier_flag(key_code);
     if (modifier_flag != krbn::modifier_flag::zero) {
       modifier_flag_manager_.manipulate(modifier_flag, operation);
 
-      post_key(key_code, pressed);
+      post_key(key_code, pressed, timestamp);
       return true;
     }
 
     return false;
   }
 
-	void post_key(krbn::key_code key_code, bool pressed) {
+	void post_key(krbn::key_code key_code, bool pressed, uint64_t timestamp) {
 		if (modifier_flag_manager_.pressed(krbn::modifier_flag::left_control)) {
 			switch (static_cast<uint32_t>(key_code)) {
-#define wrapC(fk,tk) \
-			fk: \
-				if (pressed) post_key1(static_cast<krbn::key_code>(224), false); \
-				post_key1(static_cast<krbn::key_code>(tk), pressed);             \
-				if (!pressed) post_key1(static_cast<krbn::key_code>(224), true); \
+#define wrapC(fk,tk)							\
+				fk:					\
+				if (pressed) post_key1(static_cast<krbn::key_code>(224), false, timestamp);\
+				post_key1(static_cast<krbn::key_code>(tk), pressed, timestamp);\
+				if (!pressed) post_key1(static_cast<krbn::key_code>(224), true, timestamp);\
 				return
 			case wrapC(16, 40);
 			case wrapC(13, 42);
@@ -381,10 +384,12 @@ private:
 			}
 		}
 		//logger::get_logger().error("kc {0}", static_cast<uint32_t>(key_code));
-		post_key1(key_code, pressed);
+		post_key1(key_code, pressed, timestamp);
 	}
 
-  void post_key1(krbn::key_code key_code, bool pressed) {
+  void post_key1(krbn::key_code key_code, bool pressed, uint64_t timestamp) {
+    add_delay_to_continuous_event(timestamp);
+
     if (auto usage_page = krbn::types::get_usage_page(key_code)) {
       if (auto usage = krbn::types::get_usage(key_code)) {
         pqrs::karabiner_virtual_hid_device::hid_event_service::keyboard_event keyboard_event;
@@ -393,6 +398,34 @@ private:
         keyboard_event.value = pressed;
         virtual_hid_device_client_.dispatch_keyboard_event(keyboard_event);
       }
+    }
+  }
+
+  void add_delay_to_continuous_event(uint64_t timestamp) {
+    if (timestamp != last_timestamp_) {
+      last_timestamp_ = timestamp;
+
+    } else {
+      // We need to add a delay to continous events to ensure the key events order in WindowServer.
+      //
+      // Unless the delay, application will receive FlagsChanged event after KeyDown events even if the modifier key is sent before.
+      //
+      // Example of no delay:
+      //   In event_manipulator:
+      //     1. send shift key down
+      //     2. send tab key down
+      //     3. send tab key up
+      //     4. send shift key up
+      //
+      //   In application
+      //     1. KeyDown tab
+      //     2. FlagsChanged shift
+      //     3. KeyUp tab
+      //     4. FlagsChanged shift
+      //
+      // We need the delay to avoid this order changes.
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
   }
 
@@ -408,5 +441,7 @@ private:
 
   manipulated_keys manipulated_keys_;
   manipulated_keys manipulated_fn_keys_;
+
+  uint64_t last_timestamp_;
 };
 }
